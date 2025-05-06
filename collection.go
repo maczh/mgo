@@ -243,6 +243,34 @@ func toBsonD(data interface{}) (bson.D, error) {
 	return bsonDoc, nil
 }
 
+// ToAnySlice 将对象数组转换成可直接插入的[]any切片
+func ToAnySlice(docs any) []any {
+	if docs == nil {
+		return nil
+	}
+
+	// 使用反射获取值对象
+	v := reflect.ValueOf(docs)
+
+	// 类型安全检查
+	if v.Kind() != reflect.Slice { //
+		return nil
+	}
+
+	// 创建结果切片
+	result := make([]any, v.Len())
+
+	// 反射遍历元素
+	for i := 0; i < v.Len(); i++ {
+		// 获取元素值并转为interface{}
+		elem := v.Index(i).Interface() //
+		result[i] = elem
+	}
+
+	return result
+}
+
+
 // Index 模拟mgo.v2的Index
 type Index struct {
 	Keys               []string
