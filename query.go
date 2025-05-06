@@ -132,7 +132,7 @@ func (q *Query) All(result interface{}) error {
 	}
 	defer cursor.Close(ctx)
 
-	err = cursor.Decode(result)
+	err = cursor.All(q.session.ctx, result)
 	return err
 }
 
