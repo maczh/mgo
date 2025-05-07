@@ -23,6 +23,11 @@ func (d *Database) C(name string) *Collection {
 	}
 }
 
+// Session 获取Database所属的Session
+func (d *Database) Session() *Session {
+	return d.session
+}
+
 // DropDatabase 模拟mgo.v2的DropDatabase方法
 func (d *Database) DropDatabase() error {
 	ctx, cancel := context.WithTimeout(d.session.ctx, d.session.socketTimeout)

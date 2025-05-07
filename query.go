@@ -19,6 +19,11 @@ type Query struct {
 	selectFields interface{}
 }
 
+// Collection 获取Query所属的Collection
+func (q *Query) Collection() *Collection {
+	return q.collection
+}
+
 // Skip 模拟mgo.v2的Skip方法
 func (q *Query) Skip(n int) *Query {
 	q.skip = int64(n)

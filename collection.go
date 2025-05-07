@@ -16,6 +16,11 @@ type Collection struct {
 	database   *Database
 }
 
+// Database 获取Collection所属的Database
+func (c *Collection) Database() *Database {
+	return c.database
+}
+
 // Insert 模拟mgo.v2的Insert方法
 func (c *Collection) Insert(docs ...any) error {
 	ctx, cancel := context.WithTimeout(c.session.ctx, c.session.socketTimeout)
