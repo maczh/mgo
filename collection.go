@@ -5,6 +5,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"reflect"
 )
 
 // Collection 模拟mgo.v2的Collection
@@ -16,7 +17,7 @@ type Collection struct {
 }
 
 // Insert 模拟mgo.v2的Insert方法
-func (c *Collection) Insert(docs ...interface{}) error {
+func (c *Collection) Insert(docs ...any) error {
 	ctx, cancel := context.WithTimeout(c.session.ctx, c.session.socketTimeout)
 	defer cancel()
 
@@ -269,7 +270,6 @@ func ToAnySlice(docs any) []any {
 
 	return result
 }
-
 
 // Index 模拟mgo.v2的Index
 type Index struct {

@@ -157,6 +157,11 @@ func (q *Query) Count() (int, error) {
 	return int(count), err
 }
 
+// CountAll 符合所有条件的记录数
+func (q *Query) CountAll() (int, error) {
+	return q.Skip(0).Limit(0).Count()
+}
+
 // Iter 模拟mgo.v2的Iter方法
 func (q *Query) Iter() *Iter {
 	ctx, cancel := context.WithTimeout(q.session.ctx, q.session.socketTimeout)
