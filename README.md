@@ -1,5 +1,7 @@
 # github.com/maczh/mgo SDK包
 
+[English Version](README_EN.md)
+
 仿gopkg.in/mgo.v2驱动包，基于mongodb官方go语言驱动包。
 
 ## 一、概览
