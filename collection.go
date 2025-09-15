@@ -233,6 +233,25 @@ func (c *Collection) DropCollection() error {
 	return c.collection.Drop(ctx)
 }
 
+func (c *Collection) ReplaceOne(selector, updatedDoc interface{}) error {
+	ctx, cancel := context.WithTimeout(c.session.ctx, c.session.socketTimeout)
+	defer cancel()
+
+	selectorDoc, err := toBsonD(selector)
+	if err != nil {
+		return err
+	}
+
+	newDoc, err := toBsonD(updatedDoc)
+	if err != nil {
+		return err
+	}
+
+	opts := options.Replace().SetUpsert(true)
+	_, err = c.collection.ReplaceOne(ctx, selectorDoc, newDoc, opts)
+	return err
+}
+
 // toBsonD 将interface转换为bson.D
 func toBsonD(data interface{}) (bson.D, error) {
 	bsonBytes, err := bson.Marshal(data)
