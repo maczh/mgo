@@ -3,12 +3,13 @@ package mgo
 import (
 	"context"
 	"errors"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
+
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 // Session 模拟mgo.v2的Session
@@ -24,7 +25,10 @@ type Session struct {
 	socketTimeout time.Duration
 	isClosed      bool
 	url           string
+	ownsClient    bool
 }
+
+var errSessionClosed = errors.New("session is closed")
 
 // Mode 模拟mgo.v2的查询模式
 type Mode int
@@ -65,7 +69,13 @@ func DialWithTimeout(url string, timeout time.Duration, poolMax int) (*Session, 
 	if url == "" || !strings.HasPrefix(url, "mongodb://") {
 		return nil, errors.New("mongodb empty url or invalid url")
 	}
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
 	dbName, err := extractDBName(url)
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	if poolMax <= 0 {
@@ -81,19 +91,22 @@ func DialWithTimeout(url string, timeout time.Duration, poolMax int) (*Session, 
 	// 检查连接
 	err = client.Ping(ctx, nil)
 	if err != nil {
+		disconnectClient(client)
 		return nil, err
 	}
+	sessionCtx, sessionCancel := context.WithCancel(context.Background())
 
 	s := &Session{
 		client:        client,
-		ctx:           context.Background(),
-		cancel:        cancel,
+		ctx:           sessionCtx,
+		cancel:        sessionCancel,
 		mode:          Monotonic,
 		safe:          &Safe{W: 1},
-		poolLimit:     4096,
+		poolLimit:     poolMax,
 		socketTimeout: timeout,
 		url:           url,
 		database:      dbName,
+		ownsClient:    true,
 	}
 
 	return s, nil
@@ -101,6 +114,9 @@ func DialWithTimeout(url string, timeout time.Duration, poolMax int) (*Session, 
 
 // Clone 模拟mgo.v2的Clone方法
 func (s *Session) Clone() *Session {
+	if s == nil {
+		return nil
+	}
 	s.RLock()
 	defer s.RUnlock()
 
@@ -108,21 +124,17 @@ func (s *Session) Clone() *Session {
 		return nil
 	}
 
+	cloneCtx, cloneCancel := context.WithCancel(context.Background())
 	newSession := &Session{
-		client:   s.client,
-		ctx:      context.Background(),
-		cancel:   s.cancel,
-		database: s.database,
-		mode:     s.mode,
-		safe: &Safe{
-			W:        s.safe.W,
-			WMode:    s.safe.WMode,
-			WTimeout: s.safe.WTimeout,
-			FSync:    s.safe.FSync,
-			J:        s.safe.J,
-		},
+		client:        s.client,
+		ctx:           cloneCtx,
+		cancel:        cloneCancel,
+		database:      s.database,
+		mode:          s.mode,
+		safe:          cloneSafe(s.safe),
 		poolLimit:     s.poolLimit,
 		socketTimeout: s.socketTimeout,
+		ownsClient:    false,
 	}
 
 	return newSession
@@ -130,35 +142,43 @@ func (s *Session) Clone() *Session {
 
 // Copy 模拟mgo.v2的Copy方法
 func (s *Session) Copy() *Session {
+	if s == nil {
+		return nil
+	}
 	s.RLock()
-	defer s.RUnlock()
-
 	if s.isClosed {
+		s.RUnlock()
 		return nil
 	}
+	url, poolLimit, database, mode, safe, socketTimeout := s.url, s.poolLimit, s.database, s.mode, cloneSafe(s.safe), s.socketTimeout
+	s.RUnlock()
+	if socketTimeout <= 0 {
+		socketTimeout = 10 * time.Second
+	}
 
-	opts := options.Client().ApplyURI(s.url).SetMaxPoolSize(uint64(s.poolLimit))
+	opts := options.Client().ApplyURI(url).SetMaxPoolSize(uint64(poolLimit))
 
-	newClient, err := mongo.Connect(s.ctx, opts)
+	connectCtx, connectCancel := context.WithTimeout(context.Background(), socketTimeout)
+	defer connectCancel()
+	newClient, err := mongo.Connect(connectCtx, opts)
 	if err != nil {
+		if newClient != nil {
+			disconnectClient(newClient)
+		}
 		return nil
 	}
 
+	copyCtx, copyCancel := context.WithCancel(context.Background())
 	newSession := &Session{
-		client:   newClient,
-		ctx:      context.Background(),
-		cancel:   s.cancel,
-		database: s.database,
-		mode:     s.mode,
-		safe: &Safe{
-			W:        s.safe.W,
-			WMode:    s.safe.WMode,
-			WTimeout: s.safe.WTimeout,
-			FSync:    s.safe.FSync,
-			J:        s.safe.J,
-		},
-		poolLimit:     s.poolLimit,
-		socketTimeout: s.socketTimeout,
+		client:        newClient,
+		ctx:           copyCtx,
+		cancel:        copyCancel,
+		database:      database,
+		mode:          mode,
+		safe:          safe,
+		poolLimit:     poolLimit,
+		socketTimeout: socketTimeout,
+		ownsClient:    true,
 	}
 
 	return newSession
@@ -166,11 +186,14 @@ func (s *Session) Copy() *Session {
 
 // DB 模拟mgo.v2的DB方法
 func (s *Session) DB(name string) *Database {
+	if s == nil {
+		return nil
+	}
+	s.Lock()
+	defer s.Unlock()
 	if name != "" {
 		s.database = name
 	}
-	s.RLock()
-	defer s.RUnlock()
 
 	if s.isClosed {
 		return nil
@@ -186,43 +209,74 @@ func (s *Session) DB(name string) *Database {
 
 // SetSafe 模拟mgo.v2的SetSafe方法
 func (s *Session) SetSafe(safe *Safe) {
+	if s == nil {
+		return
+	}
 	s.Lock()
 	defer s.Unlock()
 
 	if safe == nil {
 		s.safe = &Safe{W: 1}
 	} else {
-		s.safe = safe
+		s.safe = cloneSafe(safe)
 	}
 }
 
 // Close 模拟mgo.v2的Close方法
 func (s *Session) Close() {
-	s.Lock()
-	defer s.Unlock()
-
-	if s.isClosed {
+	if s == nil {
 		return
 	}
-
-	s.client.Disconnect(s.ctx)
+	s.Lock()
+	if s.isClosed {
+		s.Unlock()
+		return
+	}
 	s.isClosed = true
+	client, cancel := s.client, s.cancel
+	s.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if client != nil && s.ownsClient {
+		disconnectClient(client)
+	}
 }
 
 // Ping 模拟mgo.v2的Ping方法
 func (s *Session) Ping() error {
-	s.RLock()
-	defer s.RUnlock()
-
-	if s.isClosed {
-		return errors.New("session is closed")
+	if s == nil {
+		return errSessionClosed
 	}
+	ctx, cancel, err := s.operationContext()
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	return s.client.Ping(ctx, nil)
+}
 
-	return s.client.Ping(s.ctx, nil)
+func cloneSafe(safe *Safe) *Safe {
+	if safe == nil {
+		return &Safe{W: 1}
+	}
+	return &Safe{W: safe.W, WMode: safe.WMode, WTimeout: safe.WTimeout, FSync: safe.FSync, J: safe.J}
+}
+
+func disconnectClient(client *mongo.Client) {
+	if client == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = client.Disconnect(ctx)
 }
 
 // SetSocketTimeout 模拟mgo.v2的SetSocketTimeout方法
 func (s *Session) SetSocketTimeout(d time.Duration) {
+	if s == nil {
+		return
+	}
 	s.Lock()
 	defer s.Unlock()
 
@@ -232,5 +286,27 @@ func (s *Session) SetSocketTimeout(d time.Duration) {
 
 // DatabaseNames 模拟mgo.v2的DatabaseNames
 func (s *Session) DatabaseNames() (names []string, err error) {
-	return s.client.ListDatabaseNames(s.ctx, options.ListDatabases())
+	if s == nil {
+		return nil, errSessionClosed
+	}
+	ctx, cancel, err := s.operationContext()
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
+	return s.client.ListDatabaseNames(ctx, options.ListDatabases())
+}
+
+func (s *Session) operationContext() (context.Context, context.CancelFunc, error) {
+	s.RLock()
+	defer s.RUnlock()
+	if s.isClosed || s.client == nil || s.ctx == nil {
+		return nil, func() {}, errSessionClosed
+	}
+	timeout := s.socketTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, timeout)
+	return ctx, cancel, nil
 }

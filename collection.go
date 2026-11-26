@@ -2,10 +2,12 @@ package mgo
 
 import (
 	"context"
+	"errors"
+	"reflect"
+
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"reflect"
 )
 
 // Collection 模拟mgo.v2的Collection
@@ -18,17 +20,29 @@ type Collection struct {
 
 // Database 获取Collection所属的Database
 func (c *Collection) Database() *Database {
+	if c == nil {
+		return nil
+	}
 	return c.database
+}
+
+func (c *Collection) operationContext() (context.Context, context.CancelFunc, error) {
+	if c == nil || c.collection == nil || c.session == nil {
+		return nil, func() {}, errSessionClosed
+	}
+	return c.session.operationContext()
 }
 
 // Insert 模拟mgo.v2的Insert方法
 func (c *Collection) Insert(docs ...any) error {
-	ctx, cancel := context.WithTimeout(c.session.ctx, c.session.socketTimeout)
-	defer cancel()
-
 	if len(docs) == 0 {
 		return nil
 	}
+	ctx, cancel, err := c.operationContext()
+	if err != nil {
+		return err
+	}
+	defer cancel()
 
 	// 转换为bson.D切片
 	bsonDocs := make([]interface{}, len(docs))
@@ -40,14 +54,18 @@ func (c *Collection) Insert(docs ...any) error {
 		bsonDocs[i] = bsonDoc
 	}
 
-	_, err := c.collection.InsertMany(ctx, bsonDocs)
+	_, err = c.collection.InsertMany(ctx, bsonDocs)
 	return err
 }
 
 // Find 模拟mgo.v2的Find方法
 func (c *Collection) Find(query interface{}) *Query {
+	var session *Session
+	if c != nil {
+		session = c.session
+	}
 	return &Query{
-		session:    c.session,
+		session:    session,
 		collection: c,
 		query:      query,
 		skip:       0,
@@ -58,7 +76,10 @@ func (c *Collection) Find(query interface{}) *Query {
 
 // Update 模拟mgo.v2的Update方法
 func (c *Collection) Update(selector, update interface{}) error {
-	ctx, cancel := context.WithTimeout(c.session.ctx, c.session.socketTimeout)
+	ctx, cancel, err := c.operationContext()
+	if err != nil {
+		return err
+	}
 	defer cancel()
 
 	selectorDoc, err := toBsonD(selector)
@@ -87,7 +108,10 @@ type ChangeInfo struct {
 
 // UpdateAll 模拟mgo.v2的UpdateAll方法
 func (c *Collection) UpdateAll(selector interface{}, update interface{}) (*ChangeInfo, error) {
-	ctx, cancel := context.WithTimeout(c.session.ctx, c.session.socketTimeout)
+	ctx, cancel, err := c.operationContext()
+	if err != nil {
+		return nil, err
+	}
 	defer cancel()
 
 	selectorDoc, err := toBsonD(selector)
@@ -101,13 +125,16 @@ func (c *Collection) UpdateAll(selector interface{}, update interface{}) (*Chang
 	}
 
 	result, err := c.collection.UpdateMany(ctx, selectorDoc, updateDoc)
+	if err != nil {
+		return nil, err
+	}
 	info := &ChangeInfo{
 		Updated:    int(result.ModifiedCount),
 		Removed:    0,
 		Matched:    int(result.MatchedCount),
 		UpsertedId: result.UpsertedID,
 	}
-	return info, err
+	return info, nil
 }
 
 // UpdateId 模拟mgo.v2的UpdateId方法
@@ -117,7 +144,10 @@ func (c *Collection) UpdateId(id, update interface{}) error {
 
 // Upsert 模拟mgo.v2的Upsert方法
 func (c *Collection) Upsert(selector, update interface{}) (*mongo.UpdateResult, error) {
-	ctx, cancel := context.WithTimeout(c.session.ctx, c.session.socketTimeout)
+	ctx, cancel, err := c.operationContext()
+	if err != nil {
+		return nil, err
+	}
 	defer cancel()
 
 	selectorDoc, err := toBsonD(selector)
@@ -141,7 +171,10 @@ func (c *Collection) UpsertId(id, update interface{}) (*mongo.UpdateResult, erro
 
 // Remove 模拟mgo.v2的Remove方法
 func (c *Collection) Remove(selector interface{}) error {
-	ctx, cancel := context.WithTimeout(c.session.ctx, c.session.socketTimeout)
+	ctx, cancel, err := c.operationContext()
+	if err != nil {
+		return err
+	}
 	defer cancel()
 
 	selectorDoc, err := toBsonD(selector)
@@ -160,7 +193,10 @@ func (c *Collection) RemoveId(id interface{}) error {
 
 // RemoveAll 模拟mgo.v2的RemoveAll方法
 func (c *Collection) RemoveAll(selector interface{}) (*mongo.DeleteResult, error) {
-	ctx, cancel := context.WithTimeout(c.session.ctx, c.session.socketTimeout)
+	ctx, cancel, err := c.operationContext()
+	if err != nil {
+		return nil, err
+	}
 	defer cancel()
 
 	selectorDoc, err := toBsonD(selector)
@@ -173,7 +209,10 @@ func (c *Collection) RemoveAll(selector interface{}) (*mongo.DeleteResult, error
 
 // Count 模拟mgo.v2的Count方法
 func (c *Collection) Count() (int, error) {
-	ctx, cancel := context.WithTimeout(c.session.ctx, c.session.socketTimeout)
+	ctx, cancel, err := c.operationContext()
+	if err != nil {
+		return 0, err
+	}
 	defer cancel()
 
 	count, err := c.collection.CountDocuments(ctx, bson.D{})
@@ -182,11 +221,17 @@ func (c *Collection) Count() (int, error) {
 
 // EnsureIndex 模拟mgo.v2的EnsureIndex方法
 func (c *Collection) EnsureIndex(index Index) error {
-	ctx, cancel := context.WithTimeout(c.session.ctx, c.session.socketTimeout)
+	ctx, cancel, err := c.operationContext()
+	if err != nil {
+		return err
+	}
 	defer cancel()
 
 	keys := bson.D{}
 	for _, key := range index.Keys {
+		if key == "" || key == "-" {
+			return errors.New("index key must not be empty")
+		}
 		direction := 1
 		if key[0] == '-' {
 			direction = -1
@@ -221,20 +266,26 @@ func (c *Collection) EnsureIndex(index Index) error {
 		Options: opts,
 	}
 
-	_, err := c.collection.Indexes().CreateOne(ctx, model)
+	_, err = c.collection.Indexes().CreateOne(ctx, model)
 	return err
 }
 
 // DropCollection 模拟mgo.v2的DropCollection方法
 func (c *Collection) DropCollection() error {
-	ctx, cancel := context.WithTimeout(c.session.ctx, c.session.socketTimeout)
+	ctx, cancel, err := c.operationContext()
+	if err != nil {
+		return err
+	}
 	defer cancel()
 
 	return c.collection.Drop(ctx)
 }
 
 func (c *Collection) ReplaceOne(selector, updatedDoc interface{}) error {
-	ctx, cancel := context.WithTimeout(c.session.ctx, c.session.socketTimeout)
+	ctx, cancel, err := c.operationContext()
+	if err != nil {
+		return err
+	}
 	defer cancel()
 
 	selectorDoc, err := toBsonD(selector)

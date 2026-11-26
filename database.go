@@ -2,6 +2,7 @@ package mgo
 
 import (
 	"context"
+
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 )
@@ -15,6 +16,9 @@ type Database struct {
 
 // C 模拟mgo.v2的C方法
 func (d *Database) C(name string) *Collection {
+	if d == nil || d.session == nil || d.db == nil {
+		return &Collection{}
+	}
 	return &Collection{
 		session:    d.session,
 		collection: d.db.Collection(name),
@@ -25,12 +29,25 @@ func (d *Database) C(name string) *Collection {
 
 // Session 获取Database所属的Session
 func (d *Database) Session() *Session {
+	if d == nil {
+		return nil
+	}
 	return d.session
+}
+
+func (d *Database) operationContext() (context.Context, context.CancelFunc, error) {
+	if d == nil || d.db == nil || d.session == nil {
+		return nil, func() {}, errSessionClosed
+	}
+	return d.session.operationContext()
 }
 
 // DropDatabase 模拟mgo.v2的DropDatabase方法
 func (d *Database) DropDatabase() error {
-	ctx, cancel := context.WithTimeout(d.session.ctx, d.session.socketTimeout)
+	ctx, cancel, err := d.operationContext()
+	if err != nil {
+		return err
+	}
 	defer cancel()
 
 	return d.db.Drop(ctx)
@@ -38,7 +55,10 @@ func (d *Database) DropDatabase() error {
 
 // Run 模拟mgo.v2的Run方法
 func (d *Database) Run(cmd interface{}, result interface{}) error {
-	ctx, cancel := context.WithTimeout(d.session.ctx, d.session.socketTimeout)
+	ctx, cancel, err := d.operationContext()
+	if err != nil {
+		return err
+	}
 	defer cancel()
 
 	cmdDoc := bson.M{}
@@ -66,6 +86,9 @@ func (d *Database) Run(cmd interface{}, result interface{}) error {
 
 // AddUser 模拟mgo.v2的AddUser方法
 func (d *Database) AddUser(username, password string, readOnly bool) error {
+	if d == nil {
+		return errSessionClosed
+	}
 	cmd := bson.M{
 		"createUser": username,
 		"pwd":        password,
@@ -92,5 +115,13 @@ func (d *Database) RemoveUser(username string) error {
 
 // CollectionNames 模拟mgo.v2的CollectionNames方法
 func (db *Database) CollectionNames() (names []string, err error) {
-	return db.db.ListCollectionNames(context.Background(), bson.D{})
+	if db == nil || db.db == nil || db.session == nil {
+		return nil, errSessionClosed
+	}
+	ctx, cancel, err := db.session.operationContext()
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
+	return db.db.ListCollectionNames(ctx, bson.D{})
 }

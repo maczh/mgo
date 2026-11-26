@@ -1,6 +1,6 @@
 module github.com/maczh/mgo
 
-go 1.19
+go 1.25.7
 
 require go.mongodb.org/mongo-driver v1.17.3
 
